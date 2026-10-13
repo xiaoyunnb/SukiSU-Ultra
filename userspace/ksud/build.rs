@@ -1,255 +1,246 @@
-@file:Suppress("UnstableApiUsage")
+use std::env;
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-import com.google.protobuf.gradle.id
+const BOOTSTRAP_SOURCE: &str = "src/lkm_image_bootstrap.S";
+const BOOTSTRAP_OBJECT: &str = "lkm_image_bootstrap.o";
+const PREPARED_BOOTSTRAP_OBJECT: &str = ".lkm_image_bootstrap.o";
 
-plugins {
-    alias(libs.plugins.agp.app)
-    alias(libs.plugins.compose.compiler)
-    alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.lsplugin.apksign)
-    alias(libs.plugins.protobuf)
-    id("kotlin-parcelize")
-}
+fn get_git_version() -> Result<(u32, String), std::io::Error> {
+    let output = Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .output()?;
 
-val androidCompileSdkVersion = rootProject.extra["androidCompileSdkVersion"] as Int
-val androidCompileSdkVersionMinor = rootProject.extra["androidCompileSdkVersionMinor"] as Int
-val androidCompileNdkVersion = rootProject.extra["androidCompileNdkVersion"] as String
-val androidBuildToolsVersion = rootProject.extra["androidBuildToolsVersion"] as String
-val androidMinSdkVersion = rootProject.extra["androidMinSdkVersion"] as Int
-val androidTargetSdkVersion = rootProject.extra["androidTargetSdkVersion"] as Int
-val androidSourceCompatibility = rootProject.extra["androidSourceCompatibility"] as JavaVersion
-val androidTargetCompatibility = rootProject.extra["androidTargetCompatibility"] as JavaVersion
-val managerVersionCode = rootProject.extra["managerVersionCode"] as Int
-val managerVersionName = rootProject.extra["managerVersionName"] as String
+    let output = output.stdout;
+    let version_code = String::from_utf8(output).expect("Failed to read git count stdout");
+    let version_code: u32 = version_code
+        .trim()
+        .parse()
+        .map_err(|_| std::io::Error::other("Failed to parse git count"))?;
+    let version_code = 40000 - 2815 + version_code; // For historical reasons
 
-val isPrBuild = project.findProperty("IS_PR_BUILD")?.toString()?.toBoolean() ?: false
-// 固定包名与软件名（不再随 isPrBuild 漂移，避免 applicationId 与 namespace 不一致）
-val defaultManagerPackageName = "com.yiciyu.u"
-val defaultManagerName = "一次雨u"
-val managerPackageName = project.findProperty("KSU_PACKAGE_NAME")?.toString() ?: defaultManagerPackageName
-val managerName = project.findProperty("KSU_NAME")?.toString() ?: defaultManagerName
-
-apksign {
-    storeFileProperty = "KEYSTORE_FILE"
-    storePasswordProperty = "KEYSTORE_PASSWORD"
-    keyAliasProperty = "KEY_ALIAS"
-    keyPasswordProperty = "KEY_PASSWORD"
-}
-
-protobuf {
-    protoc {
-        artifact = libs.protobuf.protoc.get().toString()
-    }
-    generateProtoTasks {
-        ofNonTest().forEach { task ->
-            task.builtins {
-                id("java") {
-                    option("lite")
-                }
-                id("kotlin") {
-                    option("lite")
-                }
-            }
-        }
-    }
-}
-
-val baseCFlags = listOf(
-    "-Wall", "-Qunused-arguments", "-fvisibility=hidden", "-fvisibility-inlines-hidden",
-    "-fno-exceptions", "-fno-stack-protector", "-fomit-frame-pointer",
-    "-Wno-builtin-macro-redefined", "-Wno-unused-value", "-D__FILE__=__FILE_NAME__"
-)
-val baseCppFlags = baseCFlags + "-fno-rtti"
-
-android {
-    namespace = "com.sukisu.ultra"
-
-    buildTypes {
-        debug {
-            externalNativeBuild {
-                cmake {
-                    arguments += listOf("-DCMAKE_CXX_FLAGS_DEBUG=-Og", "-DCMAKE_C_FLAGS_DEBUG=-Og")
-                }
-            }
-        }
-        release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            vcsInfo.include = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            externalNativeBuild {
-                cmake {
-                    arguments += "-DDEBUG_SYMBOLS_PATH=${layout.buildDirectory.get().asFile.absolutePath}/symbols"
-                    arguments += "-DCMAKE_BUILD_TYPE=Release"
-
-                    val releaseFlags = listOf(
-                        "-flto", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
-                        "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-Wl,--exclude-libs,ALL"
-                    )
-                    val configFlags = listOf("-Oz", "-DNDEBUG").joinToString(" ")
-
-                    cppFlags += releaseFlags
-                    cFlags += releaseFlags
-
-                    arguments += listOf(
-                        "-DCMAKE_CXX_FLAGS_RELEASE=$configFlags",
-                        "-DCMAKE_C_FLAGS_RELEASE=$configFlags",
-                        "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,--icf=all -s -Wl,--hash-style=sysv -Wl,-z,norelro"
-                    )
-                }
-            }
-        }
-    }
-
-    buildFeatures {
-        aidl = true
-        buildConfig = true
-        resValues = true
-        compose = true
-        prefab = true
-    }
-
-    packaging {
-        dex {
-            useLegacyPackaging = true
-        }
-        jniLibs {
-            useLegacyPackaging = true
-            excludes += "lib/*/libandroidx.graphics.path.so"
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-        }
-    }
-
-    dependenciesInfo {
-        includeInApk = false
-        includeInBundle = false
-    }
-
-    androidResources {
-        generateLocaleConfig = true
-    }
-    compileSdk {
-        version =
-            release(androidCompileSdkVersion) {
-                minorApiLevel = androidCompileSdkVersionMinor
-            }
-    }
-    buildToolsVersion = androidBuildToolsVersion
-    ndkVersion = androidCompileNdkVersion
-
-    defaultConfig {
-        minSdk = androidMinSdkVersion
-        targetSdk = androidTargetSdkVersion
-        versionCode = managerVersionCode
-        versionName = managerVersionName
-        applicationId = managerPackageName
-
-        buildConfigField("boolean", "IS_PR_BUILD", isPrBuild.toString())
-        resValue("string", "app_name", managerName)
-
-        externalNativeBuild {
-            cmake {
-                arguments += "-DANDROID_STL=none"
-                cFlags += baseCFlags + "-std=c2x"
-                cppFlags += baseCppFlags + "-std=c++2b"
-            }
-        }
-
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "riscv64")
-        }
-    }
-
-    lint {
-        abortOnError = true
-        checkReleaseBuilds = false
-    }
-
-    compileOptions {
-        sourceCompatibility = androidSourceCompatibility
-        targetCompatibility = androidTargetCompatibility
-    }
-}
-
-androidComponents {
-    onVariants(selector().withBuildType("release")) {
-        it.packaging.resources.excludes.addAll(listOf("META-INF/**", "kotlin/**", "**.bin"))
-    }
-}
-
-base {
-    archivesName.set(
-        "${managerName.replace(" ", "_")}_${managerVersionName}_${managerVersionCode}"
+    let version_name = String::from_utf8(
+        Command::new("git")
+            .args(["describe", "--tags", "--always"])
+            .output()?
+            .stdout,
     )
+    .map_err(|_| std::io::Error::other("Failed to parse git count"))?;
+    let version_name = version_name.trim_start_matches('v').to_string();
+    Ok((version_code, version_name))
 }
 
-dependencies {
-    implementation(libs.androidx.activity.compose)
-    implementation(libs.androidx.core.splashscreen)
+fn configure_bindgen() {
+    // The bindgen::Builder is the main entry point
+    // to bindgen, and lets you build up options for
+    // the resulting bindings.
+    let mut builder = bindgen::Builder::default()
+        // The input header we would like to generate
+        // bindings for.
+        .header("src/ksu_uapi.h")
+        .clang_args(["-x", "c++", "-I../../"])
+        // Tell cargo to invalidate the built crate whenever any of the
+        // included header files changed.
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("riscv64") {
+        // libc does not yet expose Android's RISC-V signal context. Generate
+        // it from the target NDK rather than assuming another libc's layout.
+        builder = builder.header_contents("ksu_signal_context.h", "#include <sys/ucontext.h>");
+    }
+    let bindings = builder
+        // Finish the builder and generate the bindings.
+        .generate()
+        // Unwrap the Result and panic on failure.
+        .expect("Unable to generate bindings");
 
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.compose.material.icons.extended)
-    implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.ui)
-    implementation(libs.androidx.compose.ui.tooling.preview)
-    implementation(libs.androidx.documentfile)
-
-    debugImplementation(libs.androidx.compose.ui.test.manifest)
-    debugImplementation(libs.androidx.compose.ui.tooling)
-
-    implementation(libs.androidx.lifecycle.runtime.compose)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.viewmodel.compose)
-    implementation(libs.androidx.navigationevent.compose)
-
-    implementation(libs.com.github.topjohnwu.libsu.core)
-    implementation(libs.com.github.topjohnwu.libsu.service)
-    implementation(libs.com.github.topjohnwu.libsu.io)
-
-    implementation(libs.dev.rikka.rikkax.parcelablelist)
-
-    implementation(libs.kotlinx.coroutines.core)
-
-    implementation(libs.commonmark)
-    implementation(libs.commonmark.ext.gfm.tables)
-    implementation(libs.commonmark.ext.gfm.strikethrough)
-    implementation(libs.commonmark.ext.autolink)
-    implementation(libs.commonmark.ext.task.list.items)
-
-    implementation(libs.androidx.webkit)
-
-    implementation(libs.lsposed.cxx)
-
-    implementation(libs.hiddenapibypass)
-
-    implementation(libs.miuix.ui)
-    implementation(libs.miuix.icons)
-    implementation(libs.miuix.nav)
-    implementation(libs.miuix.preference)
-    implementation(libs.miuix.blur)
-
-    implementation(platform(libs.okhttp.bom))
-    implementation(libs.okhttp)
-
-    implementation(libs.material.kolor)
-
-    implementation(libs.appiconloader)
-
-    implementation(libs.commons.compress)
-    implementation(libs.xz)
-    implementation(libs.protobuf.kotlin.lite)
+    // Write the bindings to the $OUT_DIR/bindings.rs file.
+    let out_path = std::path::PathBuf::from(env::var("OUT_DIR").unwrap());
+    // for debug, uncomment below
+    // let out_path = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    bindings
+        .write_to_file(out_path.join("bindings.rs"))
+        .expect("Couldn't write bindings!");
 }
 
-kotlin {
-    compilerOptions {
-        freeCompilerArgs.addAll(
-            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
-            "-opt-in=androidx.compose.material3.ExperimentalMaterial3ExpressiveApi",
-        )
+fn validate_bootstrap_object(path: &Path) -> io::Result<()> {
+    let object = fs::read(path)?;
+    let valid = object.len() >= 64
+        && object.starts_with(b"\x7fELF")
+        && object[4] == 2
+        && object[5] == 1
+        && u16::from_le_bytes([object[16], object[17]]) == 1
+        && u16::from_le_bytes([object[18], object[19]]) == 183;
+    if valid {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "bootstrap object must be a little-endian AArch64 ELF64 ET_REL",
+        ))
+    }
+}
+
+fn copy_bootstrap_object(source: &Path, output: &Path) -> io::Result<()> {
+    validate_bootstrap_object(source)?;
+    fs::copy(source, output)?;
+    Ok(())
+}
+
+fn ndk_clang() -> Option<PathBuf> {
+    let ndk = env::var_os("ANDROID_NDK_HOME")
+        .or_else(|| env::var_os("ANDROID_NDK_ROOT"))
+        .map(PathBuf::from)?;
+    let prebuilt = ndk.join("toolchains/llvm/prebuilt");
+    let mut hosts = fs::read_dir(prebuilt)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    hosts.sort();
+    hosts.into_iter().find_map(|host| {
+        ["clang", "clang.exe"]
+            .into_iter()
+            .map(|name| host.join("bin").join(name))
+            .find(|path| path.is_file())
+    })
+}
+
+fn run_assembler(program: &Path, arguments: &[OsString]) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(arguments)
+        .output()
+        .map_err(|error| format!("{}: {error}", program.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let details = if output.stderr.is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    Err(format!(
+        "{}: {}",
+        program.display(),
+        String::from_utf8_lossy(details).trim()
+    ))
+}
+
+fn assemble_bootstrap() {
+    println!("cargo:rerun-if-changed={BOOTSTRAP_SOURCE}");
+    println!("cargo:rerun-if-env-changed=KSU_LKM_BOOTSTRAP_OBJECT");
+    println!("cargo:rerun-if-env-changed=KSU_LKM_BOOTSTRAP_CC");
+    println!("cargo:rerun-if-env-changed=ANDROID_NDK_HOME");
+    println!("cargo:rerun-if-env-changed=ANDROID_NDK_ROOT");
+
+    let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let source = manifest.join(BOOTSTRAP_SOURCE);
+    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join(BOOTSTRAP_OBJECT);
+
+    if let Some(prebuilt) = env::var_os("KSU_LKM_BOOTSTRAP_OBJECT") {
+        let prebuilt = PathBuf::from(prebuilt);
+        copy_bootstrap_object(&prebuilt, &output).unwrap_or_else(|error| {
+            panic!(
+                "cannot use KSU_LKM_BOOTSTRAP_OBJECT {}: {error}",
+                prebuilt.display()
+            )
+        });
+        return;
+    }
+
+    // cross builds prepare this file on the host before entering the container.
+    let prepared = manifest.join(PREPARED_BOOTSTRAP_OBJECT);
+    println!("cargo:rerun-if-changed={}", prepared.display());
+    if prepared.is_file() {
+        copy_bootstrap_object(&prepared, &output).unwrap_or_else(|error| {
+            panic!(
+                "cannot use prepared bootstrap object {}: {error}",
+                prepared.display()
+            )
+        });
+        return;
+    }
+
+    let mut errors = Vec::new();
+    let mut drivers = Vec::<PathBuf>::new();
+    if let Some(compiler) = env::var_os("KSU_LKM_BOOTSTRAP_CC") {
+        drivers.push(PathBuf::from(compiler));
+    }
+    drivers.push(PathBuf::from("aarch64-linux-gnu-gcc"));
+    if let Some(clang) = ndk_clang() {
+        drivers.push(clang);
+    }
+    drivers.push(PathBuf::from("clang"));
+
+    for driver in drivers {
+        let mut arguments = Vec::<OsString>::new();
+        if driver
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("clang"))
+        {
+            arguments.push("--target=aarch64-linux-gnu".into());
+        }
+        arguments.extend([
+            "-c".into(),
+            "-nostdlib".into(),
+            "-o".into(),
+            output.as_os_str().to_owned(),
+            source.as_os_str().to_owned(),
+        ]);
+        match run_assembler(&driver, &arguments) {
+            Ok(()) => {
+                validate_bootstrap_object(&output)
+                    .expect("assembler produced an invalid bootstrap object");
+                return;
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+
+    let llvm_mc = PathBuf::from("llvm-mc");
+    let llvm_arguments = [
+        "-triple=aarch64-linux-gnu".into(),
+        "-filetype=obj".into(),
+        "-o".into(),
+        output.as_os_str().to_owned(),
+        source.as_os_str().to_owned(),
+    ];
+    match run_assembler(&llvm_mc, &llvm_arguments) {
+        Ok(()) => {
+            validate_bootstrap_object(&output)
+                .expect("llvm-mc produced an invalid bootstrap object");
+        }
+        Err(error) => {
+            errors.push(error);
+            panic!(
+                "cannot assemble the AArch64 LKM bootstrap; install an AArch64 GNU compiler, clang, or llvm-mc, or set KSU_LKM_BOOTSTRAP_OBJECT:\n{}",
+                errors.join("\n")
+            );
+        }
+    }
+}
+
+fn main() {
+    assemble_bootstrap();
+
+    let (code, name) = match get_git_version() {
+        Ok((code, name)) => (code, name),
+        Err(_) => {
+            // show warning if git is not installed
+            println!("cargo:warning=Failed to get git version, using 0.0.0");
+            (0, "0.0.0".to_string())
+        }
+    };
+    if env::var("KSU_PACKAGE_NAME").is_err() {
+        println!("cargo:rustc-env=KSU_PACKAGE_NAME=com.yiciyu.u");
+    }
+    println!("cargo:rustc-env=VERSION_CODE={code}");
+    println!("cargo:rustc-env=VERSION_NAME={name}");
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
+    if target_os == "android" {
+        configure_bindgen();
     }
 }
