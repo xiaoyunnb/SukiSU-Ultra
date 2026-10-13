@@ -149,7 +149,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spoofed: ["false", "true"]
+        # 固定包名场景下禁用 spoofed 变体：randomizer 会重命名包目录并把 namespace 随机化，
+        # 导致 applicationId 固定而 namespace 随机，产出两个同名包互相覆盖。
+        spoofed: ["false"]
 
     defaults:
       run:
@@ -412,7 +414,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spoofed: ["false", "true"]
+        # 与 build-manager 保持一致，只重打包固定包名变体。
+        spoofed: ["false"]
 
     steps:
 
@@ -675,12 +678,7 @@ jobs:
           name: Manager
           path: apks
 
-      - name: Download manager-spoofed apk
-        if: steps.need_upload.outputs.UPLOAD == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: Manager-spoofed
-          path: apks
+      # spoofed 变体已禁用，不再下载 Manager-spoofed
 
 
       # --------------------------------------------------------
